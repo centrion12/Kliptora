@@ -18,7 +18,11 @@ permissions:
 concurrency:
   group: kliptora-build-${{ github.ref }}
   cancel-in-progress: false
-
+  
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  
 jobs:
   build:
     name: Build Windows installer
