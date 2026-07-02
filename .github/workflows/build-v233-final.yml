@@ -1,0 +1,123 @@
+name: FINAL - Kliptora v2.3.3 Setup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build verified Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: Kliptora/requirements.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install --requirement Kliptora/requirements.txt pyinstaller
+
+      - name: Validate Python sources
+        shell: pwsh
+        run: |
+          python -m compileall -q Kliptora
+          python -c "import PySide6, yt_dlp, yt_dlp_ejs, curl_cffi; print('Dependencies imported successfully')"
+
+      - name: Build Kliptora.exe
+        shell: pwsh
+        working-directory: Kliptora
+        run: |
+          pyinstaller --clean --noconfirm Kliptora.spec
+          $app = Join-Path $PWD 'dist\Kliptora\Kliptora.exe'
+          if (!(Test-Path -LiteralPath $app)) {
+            throw "Kliptora.exe bulunamadi: $app"
+          }
+          Write-Host "Kliptora.exe hazir: $app"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build Setup.exe into fixed artifact directory
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          $iss = Join-Path $env:GITHUB_WORKSPACE 'installer\Kliptora.iss'
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          $setup = Join-Path $artifactDir 'Kliptora-Setup-v2.3.3.exe'
+
+          if (!(Test-Path -LiteralPath $iscc)) {
+            throw "ISCC.exe bulunamadi: $iscc"
+          }
+          if (!(Test-Path -LiteralPath $iss)) {
+            throw "Kliptora.iss bulunamadi: $iss"
+          }
+
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          # /O ve /F ile cikti konumunu ve adini kesin olarak biz belirliyoruz.
+          & $iscc "/O$artifactDir" "/FKliptora-Setup-v2.3.3" $iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup hata kodu: $LASTEXITCODE"
+          }
+
+          if (!(Test-Path -LiteralPath $setup)) {
+            Write-Host 'Artifact klasoru icerigi:'
+            Get-ChildItem -LiteralPath $artifactDir -Force -ErrorAction SilentlyContinue | Format-Table FullName, Length
+            throw "Setup.exe olusmadi: $setup"
+          }
+
+          Write-Host "SETUP BASARILI: $setup"
+          Get-Item -LiteralPath $setup | Format-List FullName, Length, LastWriteTime
+
+      - name: Create SHA-256 file
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          $setup = Join-Path $artifactDir 'Kliptora-Setup-v2.3.3.exe'
+          $hashFile = Join-Path $artifactDir 'Kliptora-Setup-v2.3.3.sha256.txt'
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+          "$hash  Kliptora-Setup-v2.3.3.exe" | Set-Content -LiteralPath $hashFile -Encoding ascii
+          Write-Host "SHA-256: $hash"
+
+      - name: Microsoft Defender custom scan
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'artifact\Kliptora-Setup-v2.3.3.exe'
+          $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($null -eq $status) {
+            Write-Warning 'Defender bu runner uzerinde kullanilamiyor.'
+            exit 0
+          }
+          Start-MpScan -ScanType CustomScan -ScanPath $setup
+          Start-Sleep -Seconds 3
+          $detections = Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object {
+            ($_.Resources -join ' ') -like "*$setup*"
+          }
+          if ($detections) {
+            $detections | Format-List
+            throw 'Microsoft Defender kurulum dosyasini tehdit olarak algiladi.'
+          }
+          Write-Host 'Microsoft Defender bu dosya icin tehdit bildirmedi.'
+
+      - name: Upload final installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kliptora-v2.3.3-Windows-FINAL
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            artifact/Kliptora-Setup-v2.3.3.exe
+            artifact/Kliptora-Setup-v2.3.3.sha256.txt
