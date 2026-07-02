@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct(u'CompanyName', u'Kliptora Tools'),
           StringStruct(u'FileDescription', u'Kliptora Video Downloader'),
-          StringStruct(u'FileVersion', u'2.3.2.0'),
+          StringStruct(u'FileVersion', u'2.3.3.0'),
           StringStruct(u'InternalName', u'Kliptora'),
           StringStruct(u'LegalCopyright', u'Copyright © 2026 Kliptora Tools'),
           StringStruct(u'OriginalFilename', u'Kliptora.exe'),
           StringStruct(u'ProductName', u'Kliptora'),
-          StringStruct(u'ProductVersion', u'2.3.2.0')
+          StringStruct(u'ProductVersion', u'2.3.3.0')
         ]
       )
     ]),

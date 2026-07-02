@@ -15,7 +15,7 @@ APP_NAME = "Kliptora"
 APP_FULL_NAME = "Kliptora Video Downloader"
 APP_SLUG = "Kliptora"
 APP_ORGANIZATION = "KliptoraTools"
-APP_USER_AGENT = "Kliptora/2.3.2"
+APP_USER_AGENT = "Kliptora/2.3.3"
 
 FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 DENO_URL_X64 = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"

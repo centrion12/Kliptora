@@ -1080,12 +1080,15 @@ class MainWindow(QMainWindow):
         if geometry:
             self.restoreGeometry(geometry)
 
-        config = self._load_update_config()
-        self.repo_owner.setText(str(self.settings.value("update_owner", config.get("owner", ""))))
-        self.repo_name.setText(str(self.settings.value("update_repo", config.get("repo", ""))))
-        protected_token = str(self.settings.value("github_token", ""))
-        if protected_token:
-            self.github_token.setText(unprotect_secret(protected_token))
+        # Yönetici arayüzü normal kullanıcılarda hiç oluşturulmaz.
+        # Bu yüzden yalnızca sahip modunda yönetici alanlarını doldur.
+        if self._owner_mode:
+            config = self._load_update_config()
+            self.repo_owner.setText(str(self.settings.value("update_owner", config.get("owner", ""))))
+            self.repo_name.setText(str(self.settings.value("update_repo", config.get("repo", ""))))
+            protected_token = str(self.settings.value("github_token", ""))
+            if protected_token:
+                self.github_token.setText(unprotect_secret(protected_token))
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self.settings.setValue("output_dir", self.output_dir.text().strip())
@@ -1635,14 +1638,23 @@ class MainWindow(QMainWindow):
 
     def _repository_values(self) -> tuple[str, str]:
         config = self._load_update_config()
-        owner = self.repo_owner.text().strip() or str(self.settings.value("update_owner", config.get("owner", "")))
-        repo = self.repo_name.text().strip() or str(self.settings.value("update_repo", config.get("repo", "")))
-        return owner, repo
+        saved_owner = str(self.settings.value("update_owner", config.get("owner", ""))).strip()
+        saved_repo = str(self.settings.value("update_repo", config.get("repo", ""))).strip()
+        if self._owner_mode:
+            owner_widget = getattr(self, "repo_owner", None)
+            repo_widget = getattr(self, "repo_name", None)
+            owner = owner_widget.text().strip() if owner_widget is not None else ""
+            repo = repo_widget.text().strip() if repo_widget is not None else ""
+            return owner or saved_owner, repo or saved_repo
+        return saved_owner, saved_repo
 
     def _saved_token(self) -> str:
-        text = self.github_token.text().strip()
-        if text:
-            return text
+        if self._owner_mode:
+            token_widget = getattr(self, "github_token", None)
+            if token_widget is not None:
+                text = token_widget.text().strip()
+                if text:
+                    return text
         return unprotect_secret(str(self.settings.value("github_token", "")))
 
     def _auto_check_updates(self) -> None:

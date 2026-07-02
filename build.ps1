@@ -23,6 +23,6 @@ if (-not $iscc) {
 
 & $iscc .\installer\Kliptora.iss
 
-$setup = Resolve-Path .\release\Kliptora-Setup-v2.3.2.exe
+$setup = Resolve-Path .\release\Kliptora-Setup-v2.3.3.exe
 Write-Host "Kurulum hazır: $setup" -ForegroundColor Green
 Get-FileHash $setup -Algorithm SHA256 | Format-List
