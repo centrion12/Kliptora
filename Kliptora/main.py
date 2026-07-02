@@ -8,19 +8,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from app.core import (
-    APP_FULL_NAME,
-    APP_SLUG,
-    bundled_resource,
-    log_dir,
-)
+from app.core import APP_FULL_NAME, APP_SLUG, bundled_resource, log_dir
 from app.main_window import MainWindow
 from app.styles import APP_STYLE
 
 
 def configure_logging() -> None:
     path = log_dir() / "kliptora.log"
-
     logging.basicConfig(
         filename=path,
         level=logging.INFO,
@@ -51,7 +45,6 @@ def main() -> int:
     )
 
     app = QApplication(sys.argv)
-
     app.setApplicationName(APP_FULL_NAME)
     app.setOrganizationName("KliptoraTools")
 
@@ -69,7 +62,6 @@ def main() -> int:
         window.setWindowIcon(app_icon)
 
     window.show()
-
     return app.exec()
 
 
