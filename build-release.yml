@@ -1,0 +1,133 @@
+name: Build clean Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: Kliptora/requirements.txt
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install --requirement Kliptora/requirements.txt pyinstaller
+
+      - name: Validate Python sources
+        shell: pwsh
+        run: |
+          python -m compileall -q Kliptora
+          python -c "import PySide6, yt_dlp, yt_dlp_ejs, curl_cffi; print('Dependencies imported successfully')"
+
+      - name: Build Kliptora.exe (one-folder, no UPX)
+        shell: pwsh
+        working-directory: Kliptora
+        run: |
+          pyinstaller --clean --noconfirm Kliptora.spec
+          if (-not (Test-Path 'dist\Kliptora\Kliptora.exe')) {
+            throw 'Kliptora.exe was not created.'
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build Setup.exe
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw 'Inno Setup compiler was not found.' }
+          & $iscc 'installer\Kliptora.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path 'release\Kliptora-Setup-v2.3.2.exe')) {
+            throw 'Installer was not created.'
+          }
+
+      - name: Optional Authenticode signing
+        if: env.SIGNING_CERT != ''
+        shell: pwsh
+        env:
+          SIGNING_CERT: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes('cert.pfx', [Convert]::FromBase64String($env:SIGNING_CERT))
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw 'signtool.exe was not found.' }
+          & $signtool sign /f cert.pfx /p $env:SIGNING_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 'release\Kliptora-Setup-v2.3.2.exe'
+          if ($LASTEXITCODE -ne 0) { throw 'Code signing failed.' }
+          Remove-Item cert.pfx -Force
+
+      - name: Create SHA-256 file
+        shell: pwsh
+        run: |
+          $setup = Resolve-Path 'release\Kliptora-Setup-v2.3.2.exe'
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
+          "$hash  Kliptora-Setup-v2.3.2.exe" | Set-Content 'release\Kliptora-Setup-v2.3.2.sha256.txt' -Encoding ascii
+          Get-AuthenticodeSignature $setup | Format-List
+          Get-Item $setup | Format-List Name, Length, LastWriteTime
+
+      - name: Microsoft Defender custom scan
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path 'release\Kliptora-Setup-v2.3.2.exe').Path
+          $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if (-not $status) {
+            Write-Warning 'Microsoft Defender is unavailable on this runner; the build continues without claiming a clean scan.'
+            exit 0
+          }
+          Start-MpScan -ScanType CustomScan -ScanPath $setup
+          Start-Sleep -Seconds 3
+          $match = Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object {
+            ($_.Resources -join ' ') -like "*$setup*"
+          }
+          if ($match) {
+            $match | Format-List
+            throw 'Microsoft Defender detected the generated installer.'
+          }
+          Write-Host 'Microsoft Defender did not report a detection for the generated installer.'
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kliptora-v2.3.2-Windows
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            release/Kliptora-Setup-v2.3.2.exe
+            release/Kliptora-Setup-v2.3.2.sha256.txt
+
+      - name: Publish tagged GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $title = "Kliptora $tag"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag 'release\Kliptora-Setup-v2.3.2.exe' 'release\Kliptora-Setup-v2.3.2.sha256.txt' --clobber
+          } else {
+            gh release create $tag 'release\Kliptora-Setup-v2.3.2.exe' 'release\Kliptora-Setup-v2.3.2.sha256.txt' --title $title --generate-notes
+          }
