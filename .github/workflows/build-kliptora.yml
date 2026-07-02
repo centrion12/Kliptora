@@ -15,6 +15,10 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 concurrency:
   group: kliptora-build-${{ github.ref }}
   cancel-in-progress: false
@@ -141,11 +145,12 @@ jobs:
           python -m pip install --requirement "Kliptora\requirements.txt"
           python -m pip install "pyinstaller>=6.10,<7"
 
-            - name: Python kaynaklarını doğrula
-        env:
-          PYTHONUTF8: "1"
-          PYTHONIOENCODING: "utf-8"
+      - name: Python kaynaklarını doğrula
+        shell: pwsh
         run: |
+          $env:PYTHONUTF8 = "1"
+          $env:PYTHONIOENCODING = "utf-8"
+          chcp 65001
           python -X utf8 -m compileall -q Kliptora
           python -X utf8 -c "import PySide6, yt_dlp, yt_dlp_ejs, curl_cffi; print('Python dependencies ready')"
 
@@ -295,10 +300,9 @@ jobs:
           Source: "..\build-tools\ffmpeg\ffprobe.exe"; DestDir: "{localappdata}\Kliptora\tools\ffmpeg\bin"; Flags: ignoreversion
           Source: "..\build-tools\deno\deno.exe"; DestDir: "{localappdata}\Kliptora\tools\deno\bin"; Flags: ignoreversion
 
-          
           [Icons]
-          Name: "{autoprograms}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\app.ico"; AppUserModelID: "Kliptora.Desktop.2"
-          Name: "{autodesktop}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\app.ico"; AppUserModelID: "Kliptora.Desktop.2"; Tasks: desktopicon
+          Name: "{autoprograms}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\Kliptora.exe"; AppUserModelID: "Kliptora.Desktop.2"
+          Name: "{autodesktop}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\Kliptora.exe"; AppUserModelID: "Kliptora.Desktop.2"; Tasks: desktopicon
 
           [Run]
           Filename: "{app}\Kliptora.exe"; Description: "Kliptora'yı başlat"; Flags: nowait postinstall skipifsilent
@@ -341,13 +345,8 @@ jobs:
             throw "Kurulum dosyası beklenenden küçük görünüyor: $($setupInfo.Length) bayt"
           }
 
-          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
-          "$hash  $env:SETUP_BASENAME.exe" |
-            Set-Content -LiteralPath "artifact\$env:SETUP_BASENAME.sha256.txt" -Encoding ascii
-
           Write-Host "Kurulum hazır: $($setupInfo.FullName)"
           Write-Host "Boyut: $([math]::Round($setupInfo.Length / 1MB, 2)) MB"
-          Write-Host "SHA-256: $hash"
 
       - name: Kurulum dosyasını yükle
         uses: actions/upload-artifact@v4
@@ -356,9 +355,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
-          path: |
-            artifact/${{ env.SETUP_BASENAME }}.exe
-            artifact/${{ env.SETUP_BASENAME }}.sha256.txt
+          path: artifact/${{ env.SETUP_BASENAME }}.exe
 
       - name: Etiketli sürümü GitHub Releases'a yayımla
         if: github.ref_type == 'tag'
@@ -367,13 +364,12 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $setup = "artifact\$env:SETUP_BASENAME.exe"
-          $hash = "artifact\$env:SETUP_BASENAME.sha256.txt"
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $setup $hash --clobber
+            gh release upload $tag $setup --clobber
           } else {
-            gh release create $tag $setup $hash `
+            gh release create $tag $setup `
               --title "Kliptora $tag" `
               --generate-notes
           }
