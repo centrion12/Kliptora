@@ -1,0 +1,375 @@
+name: Build Kliptora Windows Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Sürüm numarası (örnek: 2.3.6)"
+        required: true
+        default: "2.3.6"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kliptora-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+
+      - name: Python 3.12 kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: Kliptora/requirements.txt
+
+      - name: Sürümü belirle
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $version = "${{ inputs.version }}".Trim()
+          }
+
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "2.3.6"
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+            throw "Geçersiz sürüm numarası: $version"
+          }
+
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SETUP_BASENAME=Kliptora-Setup-v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Hazırlanacak sürüm: $version"
+
+      - name: Proje dosyalarını kontrol et
+        run: |
+          $required = @(
+            "Kliptora\main.py",
+            "Kliptora\Kliptora.spec",
+            "Kliptora\requirements.txt",
+            "Kliptora\assets\app.ico",
+            "Kliptora\app\version.py",
+            "Kliptora\app\core.py"
+          )
+
+          foreach ($path in $required) {
+            if (!(Test-Path -LiteralPath $path)) {
+              throw "Gerekli dosya bulunamadı: $path"
+            }
+          }
+
+      - name: Sürüm bilgilerini güncelle
+        run: |
+          $version = $env:APP_VERSION
+          $numericVersion = ($version -split '[-+]')[0]
+          $parts = $numericVersion.Split(".")
+
+          $major = [int]$parts[0]
+          $minor = [int]$parts[1]
+          $patch = [int]$parts[2]
+          $fourPartVersion = "$major.$minor.$patch.0"
+
+          "APP_VERSION = `"$version`"" |
+            Set-Content -LiteralPath "Kliptora\app\version.py" -Encoding utf8
+
+          $corePath = "Kliptora\app\core.py"
+          $core = Get-Content -LiteralPath $corePath -Raw
+          $core = [regex]::Replace(
+            $core,
+            'APP_USER_AGENT\s*=\s*"Kliptora/[^"]+"',
+            "APP_USER_AGENT = `"Kliptora/$version`""
+          )
+          Set-Content -LiteralPath $corePath -Value $core -Encoding utf8
+
+          $versionInfo = @"
+          VSVersionInfo(
+            ffi=FixedFileInfo(
+              filevers=($major, $minor, $patch, 0),
+              prodvers=($major, $minor, $patch, 0),
+              mask=0x3f,
+              flags=0x0,
+              OS=0x40004,
+              fileType=0x1,
+              subtype=0x0,
+              date=(0, 0)
+            ),
+            kids=[
+              StringFileInfo([
+                StringTable(
+                  u'040904B0',
+                  [
+                    StringStruct(u'CompanyName', u'Kliptora Tools'),
+                    StringStruct(u'FileDescription', u'Kliptora Video Downloader'),
+                    StringStruct(u'FileVersion', u'$fourPartVersion'),
+                    StringStruct(u'InternalName', u'Kliptora'),
+                    StringStruct(u'LegalCopyright', u'Copyright © 2026 Kliptora Tools'),
+                    StringStruct(u'OriginalFilename', u'Kliptora.exe'),
+                    StringStruct(u'ProductName', u'Kliptora'),
+                    StringStruct(u'ProductVersion', u'$fourPartVersion')
+                  ]
+                )
+              ]),
+              VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+            ]
+          )
+          "@
+
+          Set-Content -LiteralPath "Kliptora\version_info.txt" -Value $versionInfo -Encoding utf8
+
+      - name: Python bağımlılıklarını kur
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install --requirement "Kliptora\requirements.txt"
+          python -m pip install "pyinstaller>=6.10,<7"
+
+      - name: Python kaynaklarını doğrula
+        run: |
+          python -m compileall -q Kliptora
+          python -c "import PySide6, yt_dlp, yt_dlp_ejs, curl_cffi; print('Python bağımlılıkları hazır')"
+
+      - name: FFmpeg ve Deno indir
+        run: |
+          $toolsRoot = Join-Path $env:GITHUB_WORKSPACE "build-tools"
+          $ffmpegTarget = Join-Path $toolsRoot "ffmpeg"
+          $denoTarget = Join-Path $toolsRoot "deno"
+
+          Remove-Item -LiteralPath $toolsRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $ffmpegTarget, $denoTarget -Force | Out-Null
+
+          # Statik LGPL FFmpeg paketi
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip"
+          $ffmpegZip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          $ffmpegExtract = Join-Path $env:RUNNER_TEMP "ffmpeg-extract"
+
+          Remove-Item -LiteralPath $ffmpegZip, $ffmpegExtract -Recurse -Force -ErrorAction SilentlyContinue
+          curl.exe -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 `
+            --output $ffmpegZip $ffmpegUrl
+
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $ffmpegZip)) {
+            throw "FFmpeg indirilemedi."
+          }
+
+          Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegExtract -Force
+
+          $ffmpeg = Get-ChildItem -LiteralPath $ffmpegExtract -Recurse -File -Filter "ffmpeg.exe" |
+            Select-Object -First 1
+          $ffprobe = Get-ChildItem -LiteralPath $ffmpegExtract -Recurse -File -Filter "ffprobe.exe" |
+            Select-Object -First 1
+
+          if (!$ffmpeg -or !$ffprobe) {
+            throw "FFmpeg arşivinde ffmpeg.exe veya ffprobe.exe bulunamadı."
+          }
+
+          Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $ffmpegTarget "ffmpeg.exe") -Force
+          Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $ffmpegTarget "ffprobe.exe") -Force
+
+          & (Join-Path $ffmpegTarget "ffmpeg.exe") -version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) {
+            throw "İndirilen FFmpeg çalışmadı."
+          }
+
+          # Deno
+          $denoUrl = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+          $denoZip = Join-Path $env:RUNNER_TEMP "deno.zip"
+          $denoExtract = Join-Path $env:RUNNER_TEMP "deno-extract"
+
+          Remove-Item -LiteralPath $denoZip, $denoExtract -Recurse -Force -ErrorAction SilentlyContinue
+          curl.exe -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 `
+            --output $denoZip $denoUrl
+
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $denoZip)) {
+            throw "Deno indirilemedi."
+          }
+
+          Expand-Archive -LiteralPath $denoZip -DestinationPath $denoExtract -Force
+
+          $deno = Get-ChildItem -LiteralPath $denoExtract -Recurse -File -Filter "deno.exe" |
+            Select-Object -First 1
+
+          if (!$deno) {
+            throw "Deno arşivinde deno.exe bulunamadı."
+          }
+
+          Copy-Item -LiteralPath $deno.FullName -Destination (Join-Path $denoTarget "deno.exe") -Force
+
+          & (Join-Path $denoTarget "deno.exe") --version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) {
+            throw "İndirilen Deno çalışmadı."
+          }
+
+      - name: Kliptora.exe oluştur
+        working-directory: Kliptora
+        run: |
+          Remove-Item -LiteralPath "build", "dist" -Recurse -Force -ErrorAction SilentlyContinue
+          python -m PyInstaller --clean --noconfirm "Kliptora.spec"
+
+          $app = Join-Path $PWD "dist\Kliptora\Kliptora.exe"
+          if (!(Test-Path -LiteralPath $app)) {
+            throw "Kliptora.exe oluşturulamadı: $app"
+          }
+
+          $size = (Get-Item -LiteralPath $app).Length
+          if ($size -lt 1MB) {
+            throw "Kliptora.exe beklenenden küçük görünüyor: $size bayt"
+          }
+
+          Write-Host "Kliptora.exe hazır: $app"
+
+      - name: Inno Setup kur
+        run: |
+          choco install innosetup --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup kurulamadı. Çıkış kodu: $LASTEXITCODE"
+          }
+
+      - name: Kurulum betiğini oluştur
+        run: |
+          $version = $env:APP_VERSION
+          $setupBaseName = $env:SETUP_BASENAME
+          New-Item -ItemType Directory -Path "artifact" -Force | Out-Null
+
+          $iss = @"
+          #define MyAppName "Kliptora"
+          #define MyAppVersion "$version"
+          #define MyAppPublisher "Kliptora Tools"
+          #define MyAppExeName "Kliptora.exe"
+          #define MySetupBaseName "$setupBaseName"
+
+          [Setup]
+          AppId={{73CE6BD2-F20C-4EA4-A065-6D7D5E4960EA}
+          AppName={#MyAppName}
+          AppVersion={#MyAppVersion}
+          AppVerName={#MyAppName} {#MyAppVersion}
+          AppPublisher={#MyAppPublisher}
+          DefaultDirName={localappdata}\Programs\Kliptora
+          DefaultGroupName=Kliptora
+          DisableProgramGroupPage=yes
+          OutputDir=..\artifact
+          OutputBaseFilename={#MySetupBaseName}
+          SetupIconFile=..\Kliptora\assets\app.ico
+          UninstallDisplayIcon={app}\Kliptora.exe
+          Compression=lzma2/max
+          SolidCompression=yes
+          WizardStyle=modern
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          CloseApplications=yes
+          RestartApplications=no
+          SetupLogging=yes
+          UsePreviousAppDir=yes
+          UsePreviousTasks=yes
+
+          [Languages]
+          Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Masaüstü kısayolu oluştur"; GroupDescription: "Ek kısayollar:"; Flags: checkedonce
+
+          [Files]
+          Source: "..\Kliptora\dist\Kliptora\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: "..\build-tools\ffmpeg\ffmpeg.exe"; DestDir: "{localappdata}\Kliptora\tools\ffmpeg\bin"; Flags: ignoreversion
+          Source: "..\build-tools\ffmpeg\ffprobe.exe"; DestDir: "{localappdata}\Kliptora\tools\ffmpeg\bin"; Flags: ignoreversion
+          Source: "..\build-tools\deno\deno.exe"; DestDir: "{localappdata}\Kliptora\tools\deno\bin"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{autoprograms}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\Kliptora.exe"
+          Name: "{autodesktop}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\Kliptora.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\Kliptora.exe"; Description: "Kliptora'yı başlat"; Flags: nowait postinstall skipifsilent
+
+          [UninstallDelete]
+          Type: files; Name: "{localappdata}\Kliptora\tools\ffmpeg\bin\ffmpeg.exe"
+          Type: files; Name: "{localappdata}\Kliptora\tools\ffmpeg\bin\ffprobe.exe"
+          Type: files; Name: "{localappdata}\Kliptora\tools\deno\bin\deno.exe"
+          "@
+
+          Set-Content -LiteralPath "installer\Kliptora.generated.iss" -Value $iss -Encoding utf8
+
+      - name: Setup.exe oluştur
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          )
+
+          $iscc = $candidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+
+          if (!$iscc) {
+            throw "ISCC.exe bulunamadı."
+          }
+
+          & $iscc "installer\Kliptora.generated.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup hata verdi. Çıkış kodu: $LASTEXITCODE"
+          }
+
+          $setup = Join-Path $env:GITHUB_WORKSPACE "artifact\$env:SETUP_BASENAME.exe"
+          if (!(Test-Path -LiteralPath $setup)) {
+            throw "Kurulum dosyası oluşturulamadı: $setup"
+          }
+
+          $setupInfo = Get-Item -LiteralPath $setup
+          if ($setupInfo.Length -lt 10MB) {
+            throw "Kurulum dosyası beklenenden küçük görünüyor: $($setupInfo.Length) bayt"
+          }
+
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+          "$hash  $env:SETUP_BASENAME.exe" |
+            Set-Content -LiteralPath "artifact\$env:SETUP_BASENAME.sha256.txt" -Encoding ascii
+
+          Write-Host "Kurulum hazır: $($setupInfo.FullName)"
+          Write-Host "Boyut: $([math]::Round($setupInfo.Length / 1MB, 2)) MB"
+          Write-Host "SHA-256: $hash"
+
+      - name: Kurulum dosyasını yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kliptora-${{ env.APP_VERSION }}-Windows
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          path: |
+            artifact/${{ env.SETUP_BASENAME }}.exe
+            artifact/${{ env.SETUP_BASENAME }}.sha256.txt
+
+      - name: Etiketli sürümü GitHub Releases'a yayımla
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $setup = "artifact\$env:SETUP_BASENAME.exe"
+          $hash = "artifact\$env:SETUP_BASENAME.sha256.txt"
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $setup $hash --clobber
+          } else {
+            gh release create $tag $setup $hash `
+              --title "Kliptora $tag" `
+              --generate-notes
+          }
