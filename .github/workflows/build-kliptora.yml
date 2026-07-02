@@ -18,11 +18,7 @@ permissions:
 concurrency:
   group: kliptora-build-${{ github.ref }}
   cancel-in-progress: false
-  
-env:
-  PYTHONUTF8: "1"
-  PYTHONIOENCODING: "utf-8"
-  
+
 jobs:
   build:
     name: Build Windows installer
@@ -146,13 +142,10 @@ jobs:
           python -m pip install "pyinstaller>=6.10,<7"
 
       - name: Python kaynaklarını doğrula
-        shell: pwsh
         run: |
-          $env:PYTHONUTF8 = "1"
-          $env:PYTHONIOENCODING = "utf-8"
-          chcp 65001
-          python -X utf8 -m compileall -q Kliptora
-          
+          python -m compileall -q Kliptora
+          python -c "import PySide6, yt_dlp, yt_dlp_ejs, curl_cffi; print('Python bağımlılıkları hazır')"
+
       - name: FFmpeg ve Deno indir
         run: |
           $toolsRoot = Join-Path $env:GITHUB_WORKSPACE "build-tools"
@@ -299,9 +292,10 @@ jobs:
           Source: "..\build-tools\ffmpeg\ffprobe.exe"; DestDir: "{localappdata}\Kliptora\tools\ffmpeg\bin"; Flags: ignoreversion
           Source: "..\build-tools\deno\deno.exe"; DestDir: "{localappdata}\Kliptora\tools\deno\bin"; Flags: ignoreversion
 
+          
           [Icons]
-          Name: "{autoprograms}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\Kliptora.exe"
-          Name: "{autodesktop}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\Kliptora.exe"; Tasks: desktopicon
+          Name: "{autoprograms}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\app.ico"; AppUserModelID: "Kliptora.Desktop.2"
+          Name: "{autodesktop}\Kliptora"; Filename: "{app}\Kliptora.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\app.ico"; AppUserModelID: "Kliptora.Desktop.2"; Tasks: desktopicon
 
           [Run]
           Filename: "{app}\Kliptora.exe"; Description: "Kliptora'yı başlat"; Flags: nowait postinstall skipifsilent
