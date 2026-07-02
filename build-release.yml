@@ -1,29 +1,26 @@
-name: Build clean Windows installer
+name: Build Kliptora Setup v2.3.3 FIX
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
-    name: Windows installer
+    name: Windows installer fixed
     runs-on: windows-latest
     timeout-minutes: 45
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
+          cache: pip
           cache-dependency-path: Kliptora/requirements.txt
 
       - name: Install Python dependencies
@@ -38,122 +35,101 @@ jobs:
           python -m compileall -q Kliptora
           python -c "import PySide6, yt_dlp, yt_dlp_ejs, curl_cffi; print('Dependencies imported successfully')"
 
-      - name: Build Kliptora.exe (one-folder, no UPX)
+      - name: Build Kliptora.exe
         shell: pwsh
         working-directory: Kliptora
         run: |
           pyinstaller --clean --noconfirm Kliptora.spec
-          $appExe = Join-Path $PWD 'dist\Kliptora\Kliptora.exe'
-          if (-not (Test-Path -LiteralPath $appExe)) {
-            throw "Kliptora.exe was not created at: $appExe"
+          $app = Join-Path $PWD 'dist\Kliptora\Kliptora.exe'
+          if (!(Test-Path -LiteralPath $app)) {
+            throw "Kliptora.exe bulunamadi: $app"
           }
+          Write-Host "Kliptora.exe olusturuldu: $app"
 
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress --yes
 
-      - name: Build Setup.exe
+      - name: Build and collect Setup.exe
         shell: pwsh
         run: |
           $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          if (-not (Test-Path -LiteralPath $iscc)) {
-            throw 'Inno Setup compiler was not found.'
-          }
-
           $iss = Join-Path $env:GITHUB_WORKSPACE 'installer\Kliptora.iss'
-          if (-not (Test-Path -LiteralPath $iss)) {
-            throw "Installer script was not found at: $iss"
+
+          if (!(Test-Path -LiteralPath $iscc)) {
+            throw "ISCC.exe bulunamadi: $iscc"
+          }
+          if (!(Test-Path -LiteralPath $iss)) {
+            throw "Kliptora.iss bulunamadi: $iss"
           }
 
           & $iscc $iss
           if ($LASTEXITCODE -ne 0) {
-            throw "Inno Setup failed with exit code $LASTEXITCODE"
+            throw "Inno Setup hata kodu: $LASTEXITCODE"
           }
 
-          $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'release'
-          $setup = Get-ChildItem -LiteralPath $releaseDir -Filter 'Kliptora-Setup-*.exe' -File |
+          Write-Host 'Workspace icindeki setup adaylari:'
+          Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter 'Kliptora-Setup-*.exe' |
+            ForEach-Object { Write-Host $_.FullName }
+
+          $setup = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter 'Kliptora-Setup-v2.3.3.exe' |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
-          if (-not $setup) {
-            Write-Host 'Release directory contents:'
-            Get-ChildItem -LiteralPath $releaseDir -Force -ErrorAction SilentlyContinue | Format-Table FullName, Length, LastWriteTime
-            throw "Installer was not created inside: $releaseDir"
+          if ($null -eq $setup) {
+            $setup = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter 'Kliptora-Setup-*.exe' |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
           }
 
-          "SETUP_PATH=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "SETUP_NAME=$($setup.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Installer found: $($setup.FullName)"
+          if ($null -eq $setup) {
+            throw 'Inno Setup basarili gorundu ama Setup.exe bulunamadi.'
+          }
 
-      - name: Optional Authenticode signing
-        if: env.SIGNING_CERT != ''
-        shell: pwsh
-        env:
-          SIGNING_CERT: ${{ secrets.WINDOWS_CERT_BASE64 }}
-          SIGNING_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          [IO.File]::WriteAllBytes('cert.pfx', [Convert]::FromBase64String($env:SIGNING_CERT))
-          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $signtool) { throw 'signtool.exe was not found.' }
-          & $signtool sign /f cert.pfx /p $env:SIGNING_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $env:SETUP_PATH
-          if ($LASTEXITCODE -ne 0) { throw 'Code signing failed.' }
-          Remove-Item cert.pfx -Force
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          New-Item -Path $artifactDir -ItemType Directory -Force | Out-Null
+          $finalSetup = Join-Path $artifactDir 'Kliptora-Setup-v2.3.3.exe'
+          Copy-Item -LiteralPath $setup.FullName -Destination $finalSetup -Force
+
+          if (!(Test-Path -LiteralPath $finalSetup)) {
+            throw "Setup artifact klasorune kopyalanamadi: $finalSetup"
+          }
+
+          Write-Host "Setup hazir: $finalSetup"
 
       - name: Create SHA-256 file
         shell: pwsh
         run: |
-          if (-not (Test-Path -LiteralPath $env:SETUP_PATH)) {
-            throw "Setup file is missing: $env:SETUP_PATH"
-          }
-          $hashFile = Join-Path (Split-Path $env:SETUP_PATH) "$($env:SETUP_NAME).sha256.txt"
-          $hash = (Get-FileHash -LiteralPath $env:SETUP_PATH -Algorithm SHA256).Hash
-          "$hash  $($env:SETUP_NAME)" | Set-Content -LiteralPath $hashFile -Encoding ascii
-          "HASH_PATH=$hashFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Get-AuthenticodeSignature -LiteralPath $env:SETUP_PATH | Format-List
-          Get-Item -LiteralPath $env:SETUP_PATH | Format-List Name, Length, LastWriteTime
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'artifact\Kliptora-Setup-v2.3.3.exe'
+          $hashFile = Join-Path $env:GITHUB_WORKSPACE 'artifact\Kliptora-Setup-v2.3.3.sha256.txt'
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+          "$hash  Kliptora-Setup-v2.3.3.exe" | Set-Content -LiteralPath $hashFile -Encoding ascii
+          Get-Item -LiteralPath $setup | Format-List Name, Length, LastWriteTime
 
       - name: Microsoft Defender custom scan
         shell: pwsh
         run: |
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'artifact\Kliptora-Setup-v2.3.3.exe'
           $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
-          if (-not $status) {
-            Write-Warning 'Microsoft Defender is unavailable on this runner; the build continues without claiming a clean scan.'
+          if ($null -eq $status) {
+            Write-Warning 'Defender runner uzerinde kullanilamiyor.'
             exit 0
           }
-          Start-MpScan -ScanType CustomScan -ScanPath $env:SETUP_PATH
+          Start-MpScan -ScanType CustomScan -ScanPath $setup
           Start-Sleep -Seconds 3
-          $match = Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object {
-            ($_.Resources -join ' ') -like "*$($env:SETUP_PATH)*"
+          $detections = Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object {
+            ($_.Resources -join ' ') -like "*$setup*"
           }
-          if ($match) {
-            $match | Format-List
-            throw 'Microsoft Defender detected the generated installer.'
+          if ($detections) {
+            $detections | Format-List
+            throw 'Microsoft Defender kurulum dosyasini tehdit olarak algiladi.'
           }
-          Write-Host 'Microsoft Defender did not report a detection for the generated installer.'
+          Write-Host 'Microsoft Defender bu kurulum dosyasi icin tehdit bildirmedi.'
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kliptora-v2.3.3-Windows
+          name: Kliptora-v2.3.3-Windows-FIXED
           if-no-files-found: error
           retention-days: 30
-          path: |
-            ${{ env.SETUP_PATH }}
-            ${{ env.HASH_PATH }}
-
-      - name: Publish tagged GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = '${{ github.ref_name }}'
-          $title = "Kliptora $tag"
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $env:SETUP_PATH $env:HASH_PATH --clobber
-          } else {
-            gh release create $tag $env:SETUP_PATH $env:HASH_PATH --title $title --generate-notes
-          }
+          path: artifact/*
